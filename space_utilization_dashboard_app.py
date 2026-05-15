@@ -50,6 +50,7 @@ st.markdown(
             border-radius: 18px;
             border: 1px solid #e5e7eb;
             box-shadow: 0 6px 18px rgba(15, 23, 42, 0.07);
+            min-height: 105px;
         }
 
         .metric-label {
@@ -59,10 +60,10 @@ st.markdown(
         }
 
         .metric-value {
-            font-size: 25px;
+            font-size: 24px;
             color: #0f172a;
             font-weight: 850;
-            margin-top: 4px;
+            margin-top: 6px;
         }
 
         .section-title {
@@ -88,6 +89,17 @@ st.markdown(
             margin-bottom: 16px;
             font-size: 14px;
             line-height: 1.7;
+        }
+
+        .warning-box {
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            border-radius: 16px;
+            padding: 12px 16px;
+            color: #9a3412;
+            margin-bottom: 16px;
+            font-size: 13px;
+            line-height: 1.6;
         }
 
         div[data-testid="stDataFrame"] {
@@ -162,10 +174,37 @@ def find_default_column(columns, possible_names=None, fallback_index=None):
     return columns[0]
 
 
+def safe_to_datetime(series):
+    """
+    Converts Excel / normal date values into pandas datetime.
+    Handles:
+    - Proper Excel dates
+    - Text dates
+    - Excel serial dates
+    """
+
+    dt = pd.to_datetime(series, errors="coerce", dayfirst=True)
+
+    # If normal conversion fails for many records, try Excel serial number conversion
+    if dt.notna().sum() < max(1, len(series) * 0.30):
+        numeric_series = pd.to_numeric(series, errors="coerce")
+        serial_dt = pd.to_datetime(
+            numeric_series,
+            errors="coerce",
+            unit="D",
+            origin="1899-12-30",
+        )
+
+        if serial_dt.notna().sum() > dt.notna().sum():
+            dt = serial_dt
+
+    return dt
+
+
 def prepare_monthly_space(
     df,
     month_col,
-    week_col,
+    date_col,
     plant_col,
     area_col,
     stacking_height,
@@ -173,17 +212,19 @@ def prepare_monthly_space(
     work = df.copy()
 
     work[month_col] = pd.to_numeric(work[month_col], errors="coerce")
-    work[week_col] = pd.to_numeric(work[week_col], errors="coerce")
+    work[date_col] = safe_to_datetime(work[date_col])
     work[area_col] = pd.to_numeric(work[area_col], errors="coerce").fillna(0)
     work[plant_col] = work[plant_col].astype(str).str.strip()
 
-    work = work.dropna(subset=[month_col, week_col])
+    work = work.dropna(subset=[month_col, date_col])
 
     work = work[
         work[plant_col].notna()
         & (work[plant_col] != "")
         & (work[plant_col].str.lower() != "nan")
     ]
+
+    work["Date_Only"] = work[date_col].dt.date
 
     month_names = {
         1: "Jan",
@@ -202,14 +243,14 @@ def prepare_monthly_space(
 
     # --------------------------------------------------------
     # Step 1:
-    # Calculate week-wise total volumetric area for each:
-    # Month + Week + Plant
+    # Date-wise total volumetric area for each:
+    # Month + Date + Plant
     # --------------------------------------------------------
-    weekly = (
-        work.groupby([month_col, week_col, plant_col], dropna=False)[area_col]
+    daily = (
+        work.groupby([month_col, "Date_Only", plant_col], dropna=False)[area_col]
         .sum()
         .reset_index()
-        .rename(columns={area_col: "Weekly_Total_Volumetric_Area"})
+        .rename(columns={area_col: "Daily_Total_Volumetric_Area"})
     )
 
     # --------------------------------------------------------
@@ -217,31 +258,31 @@ def prepare_monthly_space(
     # Divide total volumetric area by stacking height.
     # Default stacking height = 5 feet.
     # --------------------------------------------------------
-    weekly["Weekly_Utilized_Floor_Space"] = (
-        weekly["Weekly_Total_Volumetric_Area"] / stacking_height
+    daily["Daily_Utilized_Floor_Space"] = (
+        daily["Daily_Total_Volumetric_Area"] / stacking_height
     )
 
     # --------------------------------------------------------
     # Step 3:
     # Monthly plant average:
     # Monthly Average Space =
-    # Sum of weekly utilized floor space / Number of weeks
+    # Sum of daily utilized floor space / Number of dates
     # --------------------------------------------------------
     monthly = (
-        weekly.groupby([month_col, plant_col], dropna=False)
+        daily.groupby([month_col, plant_col], dropna=False)
         .agg(
-            Total_Volumetric_Area=("Weekly_Total_Volumetric_Area", "sum"),
-            Total_Utilized_Floor_Space=("Weekly_Utilized_Floor_Space", "sum"),
-            No_of_Weeks=(week_col, "nunique"),
-            Highest_Week_Space=("Weekly_Utilized_Floor_Space", "max"),
-            Lowest_Week_Space=("Weekly_Utilized_Floor_Space", "min"),
+            Total_Volumetric_Area=("Daily_Total_Volumetric_Area", "sum"),
+            Total_Utilized_Floor_Space=("Daily_Utilized_Floor_Space", "sum"),
+            No_of_Dates=("Date_Only", "nunique"),
+            Highest_Date_Space=("Daily_Utilized_Floor_Space", "max"),
+            Lowest_Date_Space=("Daily_Utilized_Floor_Space", "min"),
         )
         .reset_index()
     )
 
     monthly["Average_Monthly_Space"] = (
         monthly["Total_Utilized_Floor_Space"]
-        / monthly["No_of_Weeks"].replace(0, pd.NA)
+        / monthly["No_of_Dates"].replace(0, pd.NA)
     )
 
     monthly["Month_Name"] = (
@@ -251,15 +292,15 @@ def prepare_monthly_space(
         .fillna(monthly[month_col].astype(str))
     )
 
-    return work, weekly, monthly
+    return work, daily, monthly
 
 
-def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
+def to_excel_bytes(monthly_df, daily_df, filtered_raw_df):
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         monthly_df.to_excel(writer, index=False, sheet_name="Monthly Plant Average")
-        weekly_df.to_excel(writer, index=False, sheet_name="Weekly Plant Summary")
+        daily_df.to_excel(writer, index=False, sheet_name="Daily Plant Summary")
         filtered_raw_df.to_excel(writer, index=False, sheet_name="Filtered Raw Data")
 
         workbook = writer.book
@@ -288,7 +329,7 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
 
         for sheet_name in [
             "Monthly Plant Average",
-            "Weekly Plant Summary",
+            "Daily Plant Summary",
             "Filtered Raw Data",
         ]:
             worksheet = writer.sheets[sheet_name]
@@ -309,8 +350,8 @@ st.markdown(
     <div class="hero-card">
         <div class="hero-title">🏭 Plant Space Utilization Control Tower</div>
         <div class="hero-subtitle">
-            Upload your weekly stock occupancy file and view month-wise average utilized floor space by plant.
-            This dashboard considers stacking height while calculating practical floor space utilization.
+            Upload your stock occupancy file and view month-wise average utilized floor space by plant.
+            The dashboard calculates the monthly average based on number of stock dates available in each month.
         </div>
     </div>
     """,
@@ -320,10 +361,10 @@ st.markdown(
 st.markdown(
     """
     <div class="formula-box">
-        <b>Calculation Logic:</b><br>
-        1. Weekly Total Volumetric Area = Sum of Volumetric Area column, usually Column AP<br>
-        2. Weekly Utilized Floor Space = Weekly Total Volumetric Area ÷ Stacking Height<br>
-        3. Monthly Average Space = Sum of Weekly Utilized Floor Space ÷ Number of weeks in that month<br>
+        <b>Final Calculation Logic:</b><br>
+        1. Daily Total Volumetric Area = Sum of Volumetric Area column, usually Column AP, by Plant + Month + Date<br>
+        2. Daily Utilized Floor Space = Daily Total Volumetric Area ÷ Stacking Height<br>
+        3. Monthly Average Space = Sum of Daily Utilized Floor Space ÷ Number of Dates in that month<br>
         <b>Default stacking height used:</b> 5 feet
     </div>
     """,
@@ -340,7 +381,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Upload Stock Occupancy Excel file",
         type=["xlsb", "xlsx", "xlsm"],
-        help="Your file should contain DATA sheet with Month, Week, Plant, and Volumetric Area columns.",
+        help="Your file should contain DATA sheet with Month, Date, Plant, and Volumetric Area columns.",
     )
 
     st.markdown("---")
@@ -359,9 +400,9 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Default expected mapping:")
     st.caption("Month = Column B")
-    st.caption("Week = Column C")
+    st.caption("Date = Select actual stock/date column")
     st.caption("Volumetric Area = Column AP")
-    st.caption("Plant = select from dropdown")
+    st.caption("Plant = Select from dropdown")
 
 
 if uploaded_file is None:
@@ -412,14 +453,33 @@ columns = list(df.columns)
 # ------------------------------------------------------------
 default_month_col = find_default_column(
     columns,
-    possible_names=["Month", "month"],
+    possible_names=[
+        "Month",
+        "month",
+        "MONTH",
+    ],
     fallback_index=1,  # Column B
 )
 
-default_week_col = find_default_column(
+default_date_col = find_default_column(
     columns,
-    possible_names=["Week", "week"],
-    fallback_index=2,  # Column C
+    possible_names=[
+        "Date",
+        "date",
+        "DATE",
+        "Stock Date",
+        "stock date",
+        "Stock_Date",
+        "Created on",
+        "created on",
+        "Posting Date",
+        "posting date",
+        "Document Date",
+        "document date",
+        "As on Date",
+        "as on date",
+    ],
+    fallback_index=0,
 )
 
 default_area_col = find_default_column(
@@ -428,6 +488,8 @@ default_area_col = find_default_column(
         "volumetric area",
         "Volumetric Area",
         "Volumetric_Area",
+        "VOL Area",
+        "VOL AREA",
         "AP",
     ],
     fallback_index=41 if len(columns) > 41 else None,  # Column AP
@@ -438,12 +500,14 @@ default_plant_col = find_default_column(
     possible_names=[
         "Plant",
         "plant",
+        "PLANT",
         "Location",
         "location",
         "Godown",
         "Warehouse",
         "warehouse",
         "Plant Name",
+        "plant name",
     ],
     fallback_index=6 if len(columns) > 6 else None,
 )
@@ -458,10 +522,11 @@ with st.sidebar:
         index=columns.index(default_month_col),
     )
 
-    week_col = st.selectbox(
-        "Week column",
+    date_col = st.selectbox(
+        "Date column",
         columns,
-        index=columns.index(default_week_col),
+        index=columns.index(default_date_col),
+        help="Select the actual stock date column. Monthly average will divide by number of unique dates.",
     )
 
     plant_col = st.selectbox(
@@ -481,16 +546,24 @@ with st.sidebar:
 # Prepare calculation
 # ------------------------------------------------------------
 try:
-    clean_df, weekly_df, monthly_df = prepare_monthly_space(
+    clean_df, daily_df, monthly_df = prepare_monthly_space(
         df=df,
         month_col=month_col,
-        week_col=week_col,
+        date_col=date_col,
         plant_col=plant_col,
         area_col=area_col,
         stacking_height=stacking_height,
     )
 except Exception as e:
     st.error(f"Unable to calculate dashboard. Please check column mapping. Error: {e}")
+    st.stop()
+
+
+# ------------------------------------------------------------
+# Data quality info
+# ------------------------------------------------------------
+if daily_df.empty or monthly_df.empty:
+    st.warning("No valid data found after applying Month, Date, Plant, and Volumetric Area logic.")
     st.stop()
 
 
@@ -535,9 +608,9 @@ filtered_monthly = monthly_df[
     & monthly_df[plant_col].astype(str).isin(selected_plants)
 ].copy()
 
-filtered_weekly = weekly_df[
-    weekly_df[month_col].isin(selected_months)
-    & weekly_df[plant_col].astype(str).isin(selected_plants)
+filtered_daily = daily_df[
+    daily_df[month_col].isin(selected_months)
+    & daily_df[plant_col].astype(str).isin(selected_plants)
 ].copy()
 
 filtered_raw = clean_df[
@@ -558,17 +631,17 @@ total_volumetric_area = filtered_monthly["Total_Volumetric_Area"].sum()
 total_floor_space = filtered_monthly["Total_Utilized_Floor_Space"].sum()
 avg_space = filtered_monthly["Average_Monthly_Space"].mean()
 plant_count = filtered_monthly[plant_col].nunique()
-week_count = filtered_weekly[week_col].nunique()
+date_count = filtered_daily["Date_Only"].nunique()
 record_count = len(filtered_raw)
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 metric_data = [
     ("Total Volumetric Area", format_number(total_volumetric_area, 2)),
-    ("Total Floor Space / 5 Ft", format_number(total_floor_space, 2)),
+    ("Total Floor Space", format_number(total_floor_space, 2)),
     ("Avg. Monthly Space", format_number(avg_space, 2)),
     ("Plants", format_number(plant_count, 0)),
-    ("Weeks", format_number(week_count, 0)),
+    ("Dates", format_number(date_count, 0)),
     ("Records", format_number(record_count, 0)),
 ]
 
@@ -723,41 +796,36 @@ with c4:
 
 
 # ------------------------------------------------------------
-# Weekly trend chart
+# Daily trend chart
 # ------------------------------------------------------------
 st.markdown(
-    '<div class="section-title">📈 Weekly Floor Space Movement</div>',
+    '<div class="section-title">📈 Daily Floor Space Movement</div>',
     unsafe_allow_html=True,
 )
 
-weekly_trend = filtered_weekly.copy()
-weekly_trend["Month_Week"] = (
-    "M"
-    + weekly_trend[month_col].astype(int).astype(str)
-    + " - W"
-    + weekly_trend[week_col].astype(int).astype(str)
-)
+daily_trend = filtered_daily.copy()
+daily_trend["Date_Label"] = pd.to_datetime(daily_trend["Date_Only"]).dt.strftime("%d-%b-%Y")
 
-fig_weekly = px.line(
-    weekly_trend.sort_values([month_col, week_col, plant_col]),
-    x="Month_Week",
-    y="Weekly_Utilized_Floor_Space",
+fig_daily = px.line(
+    daily_trend.sort_values(["Date_Only", plant_col]),
+    x="Date_Label",
+    y="Daily_Utilized_Floor_Space",
     color=plant_col,
     markers=True,
-    title="Weekly Utilized Floor Space by Plant",
+    title="Daily Utilized Floor Space by Plant",
     labels={
-        "Month_Week": "Month - Week",
-        "Weekly_Utilized_Floor_Space": "Weekly Floor Space",
+        "Date_Label": "Date",
+        "Daily_Utilized_Floor_Space": "Daily Floor Space",
         plant_col: "Plant",
     },
 )
 
-fig_weekly.update_layout(
+fig_daily.update_layout(
     height=430,
     margin=dict(l=10, r=10, t=55, b=10),
 )
 
-st.plotly_chart(fig_weekly, use_container_width=True)
+st.plotly_chart(fig_daily, use_container_width=True)
 
 
 # ------------------------------------------------------------
@@ -774,10 +842,10 @@ show_cols = [
     plant_col,
     "Total_Volumetric_Area",
     "Total_Utilized_Floor_Space",
-    "No_of_Weeks",
+    "No_of_Dates",
     "Average_Monthly_Space",
-    "Highest_Week_Space",
-    "Lowest_Week_Space",
+    "Highest_Date_Space",
+    "Lowest_Date_Space",
 ]
 
 view_df = filtered_monthly[show_cols].sort_values([month_col, plant_col]).copy()
@@ -795,34 +863,41 @@ st.dataframe(
             "Total Utilized Floor Space",
             format="%.2f",
         ),
+        "No_of_Dates": st.column_config.NumberColumn(
+            "No. of Dates",
+            format="%d",
+        ),
         "Average_Monthly_Space": st.column_config.NumberColumn(
             "Average Monthly Space",
             format="%.2f",
         ),
-        "Highest_Week_Space": st.column_config.NumberColumn(
-            "Highest Week Space",
+        "Highest_Date_Space": st.column_config.NumberColumn(
+            "Highest Date Space",
             format="%.2f",
         ),
-        "Lowest_Week_Space": st.column_config.NumberColumn(
-            "Lowest Week Space",
+        "Lowest_Date_Space": st.column_config.NumberColumn(
+            "Lowest Date Space",
             format="%.2f",
         ),
     },
 )
 
 
-with st.expander("View weekly plant-wise summary"):
+# ------------------------------------------------------------
+# Daily summary and raw data
+# ------------------------------------------------------------
+with st.expander("View daily plant-wise summary"):
     st.dataframe(
-        filtered_weekly.sort_values([month_col, week_col, plant_col]),
+        filtered_daily.sort_values([month_col, "Date_Only", plant_col]),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Weekly_Total_Volumetric_Area": st.column_config.NumberColumn(
-                "Weekly Total Volumetric Area",
+            "Daily_Total_Volumetric_Area": st.column_config.NumberColumn(
+                "Daily Total Volumetric Area",
                 format="%.2f",
             ),
-            "Weekly_Utilized_Floor_Space": st.column_config.NumberColumn(
-                "Weekly Utilized Floor Space",
+            "Daily_Utilized_Floor_Space": st.column_config.NumberColumn(
+                "Daily Utilized Floor Space",
                 format="%.2f",
             ),
         },
@@ -842,7 +917,7 @@ with st.expander("View filtered raw data"):
 # ------------------------------------------------------------
 export_bytes = to_excel_bytes(
     monthly_df=view_df,
-    weekly_df=filtered_weekly,
+    daily_df=filtered_daily,
     filtered_raw_df=filtered_raw,
 )
 
@@ -858,11 +933,11 @@ st.markdown(
     f"""
     <div class="small-note">
         Calculation logic used in this dashboard:<br>
-        1. First, the app sums volumetric area at Month + Week + Plant level.<br>
-        2. Then, it divides the total volumetric area by <b>{stacking_height} feet stacking height</b>
+        1. The app first sums volumetric area at <b>Month + Date + Plant</b> level.<br>
+        2. Then it divides the total volumetric area by <b>{stacking_height} feet stacking height</b>
         to calculate utilized floor space.<br>
-        3. After that, Month + Plant average is calculated as total utilized floor space divided by
-        the number of weeks available in that month.
+        3. Finally, Month + Plant average is calculated as total utilized floor space divided by
+        the <b>number of unique dates</b> available in that month.
     </div>
     """,
     unsafe_allow_html=True,
