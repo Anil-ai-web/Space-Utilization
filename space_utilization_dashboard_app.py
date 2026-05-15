@@ -59,7 +59,7 @@ st.markdown(
         }
 
         .metric-value {
-            font-size: 25px;
+            font-size: 22px;
             color: #0f172a;
             font-weight: 850;
             margin-top: 4px;
@@ -147,6 +147,10 @@ def format_number(value, decimals=0):
         return str(value)
 
 
+def format_sqft(value):
+    return format_number(value, 0) + " Sqft"
+
+
 def find_default_column(columns, possible_names=None, fallback_index=None):
     possible_names = possible_names or []
 
@@ -160,6 +164,21 @@ def find_default_column(columns, possible_names=None, fallback_index=None):
         return columns[fallback_index]
 
     return columns[0]
+
+
+def get_plant_display_name(plant_code):
+    plant_map = {
+        "I070": "DEL WH",
+        "I030": "ZRK WH",
+        "I080": "JAI WH",
+        "I360": "HYD WH",
+        "I290": "BNG WH",
+        "I270": "MUM WH",
+        "I190": "KOL WH",
+    }
+
+    plant_code = str(plant_code).strip().upper()
+    return plant_map.get(plant_code, plant_code)
 
 
 def prepare_monthly_space(
@@ -185,6 +204,8 @@ def prepare_monthly_space(
         & (work[plant_col].str.lower() != "nan")
     ]
 
+    work["Plant_Name"] = work[plant_col].apply(get_plant_display_name)
+
     month_names = {
         1: "Jan",
         2: "Feb",
@@ -206,7 +227,7 @@ def prepare_monthly_space(
     # Month + Week + Plant
     # --------------------------------------------------------
     weekly = (
-        work.groupby([month_col, week_col, plant_col], dropna=False)[area_col]
+        work.groupby([month_col, week_col, plant_col, "Plant_Name"], dropna=False)[area_col]
         .sum()
         .reset_index()
         .rename(columns={area_col: "Weekly_Total_Volumetric_Area"})
@@ -227,7 +248,7 @@ def prepare_monthly_space(
     # Sum of weekly utilized floor space / Number of weeks
     # --------------------------------------------------------
     monthly = (
-        weekly.groupby([month_col, plant_col], dropna=False)
+        weekly.groupby([month_col, plant_col, "Plant_Name"], dropna=False)
         .agg(
             Total_Volumetric_Area=("Weekly_Total_Volumetric_Area", "sum"),
             Total_Utilized_Floor_Space=("Weekly_Utilized_Floor_Space", "sum"),
@@ -246,7 +267,7 @@ def prepare_monthly_space(
     # --------------------------------------------------------
     # Step 4:
     # Add additional aisle space:
-    # Plant I070 = 25%
+    # Plant I070 / DEL WH = 25%
     # All other plants = 35%
     # --------------------------------------------------------
     monthly["Aisle_Percentage"] = (
@@ -298,7 +319,7 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
 
         num_fmt = workbook.add_format(
             {
-                "num_format": "#,##0.00",
+                "num_format": "#,##0",
                 "border": 1,
             }
         )
@@ -324,11 +345,11 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
             worksheet = writer.sheets[sheet_name]
             worksheet.freeze_panes(1, 0)
             worksheet.set_row(0, 22, header_fmt)
-            worksheet.set_column(0, 20, 20, text_fmt)
-            worksheet.set_column(3, 15, 22, num_fmt)
+            worksheet.set_column(0, 25, 20, text_fmt)
+            worksheet.set_column(3, 18, 22, num_fmt)
 
             if sheet_name == "Monthly Plant Average":
-                worksheet.set_column(7, 7, 15, percent_fmt)
+                worksheet.set_column(8, 8, 15, percent_fmt)
 
     output.seek(0)
     return output.getvalue()
@@ -342,8 +363,8 @@ st.markdown(
     <div class="hero-card">
         <div class="hero-title">🏭 Plant Space Utilization Control Tower</div>
         <div class="hero-subtitle">
-            Upload your weekly stock occupancy file and view month-wise average utilized floor space by plant.
-            This dashboard considers stacking height and additional aisle space while calculating practical floor space utilization.
+            Upload your weekly stock occupancy file and view month-wise average utilized floor space by warehouse.
+            This dashboard considers stacking height and additional aisle space while calculating practical floor space utilization in Sqft.
         </div>
     </div>
     """,
@@ -357,8 +378,9 @@ st.markdown(
         1. Weekly Total Volumetric Area = Sum of Volumetric Area column, usually Column AP<br>
         2. Weekly Utilized Floor Space = Weekly Total Volumetric Area ÷ Stacking Height<br>
         3. Monthly Average Space Before Aisle = Sum of Weekly Utilized Floor Space ÷ Number of weeks in that month<br>
-        4. Additional Aisle Space = 25% for Plant I070 and 35% for all other plants<br>
+        4. Additional Aisle Space = 25% for DEL WH and 35% for all other warehouses<br>
         5. Final Average Monthly Space = Monthly Average Space Before Aisle + Additional Aisle Space<br>
+        <b>Measurement Unit:</b> Sqft<br>
         <b>Default stacking height used:</b> 5 feet
     </div>
     """,
@@ -393,10 +415,21 @@ with st.sidebar:
 
     st.markdown("---")
 
+    st.header("🏭 Warehouse Name Mapping")
+    st.caption("I070 = DEL WH")
+    st.caption("I030 = ZRK WH")
+    st.caption("I080 = JAI WH")
+    st.caption("I360 = HYD WH")
+    st.caption("I290 = BNG WH")
+    st.caption("I270 = MUM WH")
+    st.caption("I190 = KOL WH")
+
+    st.markdown("---")
+
     st.header("🚚 Aisle Space Logic")
     st.info(
-        "Plant I070 = 25% additional aisle space\n\n"
-        "All other plants = 35% additional aisle space"
+        "DEL WH / I070 = 25% additional aisle space\n\n"
+        "All other warehouses = 35% additional aisle space"
     )
 
     st.markdown("---")
@@ -545,7 +578,7 @@ st.markdown('<div class="section-title">🔎 Filters</div>', unsafe_allow_html=T
 f1, f2, f3 = st.columns([1.1, 1.5, 1])
 
 all_months = sorted(monthly_df[month_col].dropna().unique())
-all_plants = sorted(monthly_df[plant_col].dropna().astype(str).unique())
+all_plants = sorted(monthly_df["Plant_Name"].dropna().astype(str).unique())
 
 with f1:
     selected_months = st.multiselect(
@@ -556,7 +589,7 @@ with f1:
 
 with f2:
     selected_plants = st.multiselect(
-        "Plant",
+        "Warehouse / Plant",
         all_plants,
         default=all_plants,
     )
@@ -577,17 +610,17 @@ with f3:
 
 filtered_monthly = monthly_df[
     monthly_df[month_col].isin(selected_months)
-    & monthly_df[plant_col].astype(str).isin(selected_plants)
+    & monthly_df["Plant_Name"].astype(str).isin(selected_plants)
 ].copy()
 
 filtered_weekly = weekly_df[
     weekly_df[month_col].isin(selected_months)
-    & weekly_df[plant_col].astype(str).isin(selected_plants)
+    & weekly_df["Plant_Name"].astype(str).isin(selected_plants)
 ].copy()
 
 filtered_raw = clean_df[
     clean_df[month_col].isin(selected_months)
-    & clean_df[plant_col].astype(str).isin(selected_plants)
+    & clean_df["Plant_Name"].astype(str).isin(selected_plants)
 ].copy()
 
 
@@ -604,18 +637,18 @@ total_floor_space = filtered_monthly["Total_Utilized_Floor_Space"].sum()
 avg_space_before_aisle = filtered_monthly["Average_Monthly_Space_Before_Aisle"].mean()
 total_aisle_space = filtered_monthly["Aisle_Space"].sum()
 final_avg_space = filtered_monthly["Average_Monthly_Space"].mean()
-plant_count = filtered_monthly[plant_col].nunique()
+plant_count = filtered_monthly["Plant_Name"].nunique()
 record_count = len(filtered_raw)
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 metric_data = [
-    ("Total Volumetric Area", format_number(total_volumetric_area, 2)),
-    ("Total Floor Space / 5 Ft", format_number(total_floor_space, 2)),
-    ("Avg. Space Before Aisle", format_number(avg_space_before_aisle, 2)),
-    ("Total Aisle Space", format_number(total_aisle_space, 2)),
-    ("Final Avg. Space", format_number(final_avg_space, 2)),
-    ("Plants", format_number(plant_count, 0)),
+    ("Total Volumetric Area", format_sqft(total_volumetric_area)),
+    ("Total Floor Space / 5 Ft", format_sqft(total_floor_space)),
+    ("Avg. Space Before Aisle", format_sqft(avg_space_before_aisle)),
+    ("Total Aisle Space", format_sqft(total_aisle_space)),
+    ("Final Avg. Space", format_sqft(final_avg_space)),
+    ("Warehouses", format_number(plant_count, 0)),
 ]
 
 for col, (label, value) in zip([k1, k2, k3, k4, k5, k6], metric_data):
@@ -636,30 +669,30 @@ for col, (label, value) in zip([k1, k2, k3, k4, k5, k6], metric_data):
 # ------------------------------------------------------------
 if chart_mode == "Final Average Monthly Space":
     chart_col = "Average_Monthly_Space"
-    y_title = "Final Average Monthly Space"
+    y_title = "Final Average Monthly Space Sqft"
 
 elif chart_mode == "Average Monthly Space Before Aisle":
     chart_col = "Average_Monthly_Space_Before_Aisle"
-    y_title = "Average Monthly Space Before Aisle"
+    y_title = "Average Monthly Space Before Aisle Sqft"
 
 elif chart_mode == "Additional Aisle Space":
     chart_col = "Aisle_Space"
-    y_title = "Additional Aisle Space"
+    y_title = "Additional Aisle Space Sqft"
 
 elif chart_mode == "Total Utilized Floor Space":
     chart_col = "Total_Utilized_Floor_Space"
-    y_title = "Total Utilized Floor Space"
+    y_title = "Total Utilized Floor Space Sqft"
 
 else:
     chart_col = "Total_Volumetric_Area"
-    y_title = "Total Volumetric Area"
+    y_title = "Total Volumetric Area Sqft"
 
 
 # ------------------------------------------------------------
 # Charts
 # ------------------------------------------------------------
 st.markdown(
-    '<div class="section-title">📊 Monthly Plant-wise Space Analysis</div>',
+    '<div class="section-title">📊 Monthly Warehouse-wise Space Analysis</div>',
     unsafe_allow_html=True,
 )
 
@@ -667,24 +700,24 @@ c1, c2 = st.columns([1.35, 1])
 
 with c1:
     fig_bar = px.bar(
-        filtered_monthly.sort_values([month_col, plant_col]),
+        filtered_monthly.sort_values([month_col, "Plant_Name"]),
         x="Month_Name",
         y=chart_col,
-        color=plant_col,
+        color="Plant_Name",
         barmode="group",
-        text_auto=".2s",
-        title=f"Plant-wise {y_title} by Month",
+        text_auto=".0s",
+        title=f"Warehouse-wise {y_title} by Month",
         labels={
             "Month_Name": "Month",
             chart_col: y_title,
-            plant_col: "Plant",
+            "Plant_Name": "Warehouse",
         },
     )
 
     fig_bar.update_layout(
         height=470,
         title_font_size=18,
-        legend_title_text="Plant",
+        legend_title_text="Warehouse",
         margin=dict(l=10, r=10, t=55, b=10),
     )
 
@@ -693,7 +726,7 @@ with c1:
 
 with c2:
     plant_rank = (
-        filtered_monthly.groupby(plant_col)["Average_Monthly_Space"]
+        filtered_monthly.groupby("Plant_Name")["Average_Monthly_Space"]
         .mean()
         .reset_index()
         .sort_values("Average_Monthly_Space", ascending=False)
@@ -702,13 +735,13 @@ with c2:
     fig_rank = px.bar(
         plant_rank,
         x="Average_Monthly_Space",
-        y=plant_col,
+        y="Plant_Name",
         orientation="h",
-        text_auto=".2s",
-        title="Final Average Monthly Floor Space Ranking by Plant",
+        text_auto=".0s",
+        title="Final Average Monthly Floor Space Ranking by Warehouse",
         labels={
-            "Average_Monthly_Space": "Final Avg. Monthly Floor Space",
-            plant_col: "Plant",
+            "Average_Monthly_Space": "Final Avg. Monthly Floor Space Sqft",
+            "Plant_Name": "Warehouse",
         },
     )
 
@@ -740,7 +773,7 @@ with c3:
         title="Final Average Floor Space Trend Month-wise",
         labels={
             "Month_Name": "Month",
-            "Average_Monthly_Space": "Final Average Floor Space",
+            "Average_Monthly_Space": "Final Average Floor Space Sqft",
         },
     )
 
@@ -763,21 +796,22 @@ with c4:
 
     latest_df = filtered_monthly[filtered_monthly[month_col] == latest_month]
 
-    donut_df = latest_df.groupby(plant_col, as_index=False)[
+    donut_df = latest_df.groupby("Plant_Name", as_index=False)[
         "Average_Monthly_Space"
     ].sum()
 
     fig_donut = px.pie(
         donut_df,
-        names=plant_col,
+        names="Plant_Name",
         values="Average_Monthly_Space",
         hole=0.45,
-        title=f"Plant Share in Month {latest_month} After Aisle Space",
+        title=f"Warehouse Share in Month {latest_month} After Aisle Space",
     )
 
     fig_donut.update_layout(
         height=420,
         margin=dict(l=10, r=10, t=55, b=10),
+        legend_title_text="Warehouse",
     )
 
     st.plotly_chart(fig_donut, use_container_width=True)
@@ -801,22 +835,23 @@ weekly_trend["Month_Week"] = (
 )
 
 fig_weekly = px.line(
-    weekly_trend.sort_values([month_col, week_col, plant_col]),
+    weekly_trend.sort_values([month_col, week_col, "Plant_Name"]),
     x="Month_Week",
     y="Weekly_Utilized_Floor_Space",
-    color=plant_col,
+    color="Plant_Name",
     markers=True,
-    title="Weekly Utilized Floor Space by Plant Before Aisle Loading",
+    title="Weekly Utilized Floor Space by Warehouse Before Aisle Loading",
     labels={
         "Month_Week": "Month - Week",
-        "Weekly_Utilized_Floor_Space": "Weekly Floor Space Before Aisle",
-        plant_col: "Plant",
+        "Weekly_Utilized_Floor_Space": "Weekly Floor Space Before Aisle Sqft",
+        "Plant_Name": "Warehouse",
     },
 )
 
 fig_weekly.update_layout(
     height=430,
     margin=dict(l=10, r=10, t=55, b=10),
+    legend_title_text="Warehouse",
 )
 
 st.plotly_chart(fig_weekly, use_container_width=True)
@@ -834,6 +869,7 @@ show_cols = [
     month_col,
     "Month_Name",
     plant_col,
+    "Plant_Name",
     "Total_Volumetric_Area",
     "Total_Utilized_Floor_Space",
     "No_of_Weeks",
@@ -845,62 +881,74 @@ show_cols = [
     "Lowest_Week_Space",
 ]
 
-view_df = filtered_monthly[show_cols].sort_values([month_col, plant_col]).copy()
+view_df = filtered_monthly[show_cols].sort_values([month_col, "Plant_Name"]).copy()
 
 st.dataframe(
     view_df,
     use_container_width=True,
     hide_index=True,
     column_config={
+        plant_col: st.column_config.TextColumn(
+            "Plant Code",
+        ),
+        "Plant_Name": st.column_config.TextColumn(
+            "Warehouse Name",
+        ),
         "Total_Volumetric_Area": st.column_config.NumberColumn(
-            "Total Volumetric Area",
-            format="%.2f",
+            "Total Volumetric Area Sqft",
+            format="%.0f",
         ),
         "Total_Utilized_Floor_Space": st.column_config.NumberColumn(
-            "Total Utilized Floor Space",
-            format="%.2f",
+            "Total Utilized Floor Space Sqft",
+            format="%.0f",
         ),
         "Average_Monthly_Space_Before_Aisle": st.column_config.NumberColumn(
-            "Average Monthly Space Before Aisle",
-            format="%.2f",
+            "Average Monthly Space Before Aisle Sqft",
+            format="%.0f",
         ),
         "Aisle_Percentage": st.column_config.NumberColumn(
             "Aisle %",
             format="%.0f%%",
         ),
         "Aisle_Space": st.column_config.NumberColumn(
-            "Additional Aisle Space",
-            format="%.2f",
+            "Additional Aisle Space Sqft",
+            format="%.0f",
         ),
         "Average_Monthly_Space": st.column_config.NumberColumn(
-            "Final Average Monthly Space",
-            format="%.2f",
+            "Final Average Monthly Space Sqft",
+            format="%.0f",
         ),
         "Highest_Week_Space": st.column_config.NumberColumn(
-            "Highest Week Space",
-            format="%.2f",
+            "Highest Week Space Sqft",
+            format="%.0f",
         ),
         "Lowest_Week_Space": st.column_config.NumberColumn(
-            "Lowest Week Space",
-            format="%.2f",
+            "Lowest Week Space Sqft",
+            format="%.0f",
         ),
     },
 )
 
 
-with st.expander("View weekly plant-wise summary"):
+with st.expander("View weekly warehouse-wise summary"):
     st.dataframe(
-        filtered_weekly.sort_values([month_col, week_col, plant_col]),
+        filtered_weekly.sort_values([month_col, week_col, "Plant_Name"]),
         use_container_width=True,
         hide_index=True,
         column_config={
+            plant_col: st.column_config.TextColumn(
+                "Plant Code",
+            ),
+            "Plant_Name": st.column_config.TextColumn(
+                "Warehouse Name",
+            ),
             "Weekly_Total_Volumetric_Area": st.column_config.NumberColumn(
-                "Weekly Total Volumetric Area",
-                format="%.2f",
+                "Weekly Total Volumetric Area Sqft",
+                format="%.0f",
             ),
             "Weekly_Utilized_Floor_Space": st.column_config.NumberColumn(
-                "Weekly Utilized Floor Space Before Aisle",
-                format="%.2f",
+                "Weekly Utilized Floor Space Before Aisle Sqft",
+                format="%.0f",
             ),
         },
     )
@@ -935,13 +983,13 @@ st.markdown(
     f"""
     <div class="small-note">
         Calculation logic used in this dashboard:<br>
-        1. First, the app sums volumetric area at Month + Week + Plant level.<br>
+        1. First, the app sums volumetric area at Month + Week + Warehouse level.<br>
         2. Then, it divides the total volumetric area by <b>{stacking_height} feet stacking height</b>
-        to calculate utilized floor space.<br>
-        3. After that, Month + Plant average is calculated as total utilized floor space divided by
+        to calculate utilized floor space in <b>Sqft</b>.<br>
+        3. After that, Month + Warehouse average is calculated as total utilized floor space divided by
         the number of weeks available in that month.<br>
         4. Then, additional aisle space is added:
-        <b>25% for Plant I070</b> and <b>35% for all other plants</b>.<br>
+        <b>25% for DEL WH / I070</b> and <b>35% for all other warehouses</b>.<br>
         5. Final Average Monthly Space = Average Monthly Space Before Aisle + Additional Aisle Space.
     </div>
     """,
