@@ -224,7 +224,7 @@ def prepare_monthly_space(
     # --------------------------------------------------------
     # Step 3:
     # Monthly plant average:
-    # Monthly Average Space =
+    # Monthly Average Space Before Aisle =
     # Sum of weekly utilized floor space / Number of weeks
     # --------------------------------------------------------
     monthly = (
@@ -239,9 +239,33 @@ def prepare_monthly_space(
         .reset_index()
     )
 
-    monthly["Average_Monthly_Space"] = (
+    monthly["Average_Monthly_Space_Before_Aisle"] = (
         monthly["Total_Utilized_Floor_Space"]
         / monthly["No_of_Weeks"].replace(0, pd.NA)
+    )
+
+    # --------------------------------------------------------
+    # Step 4:
+    # Add additional aisle space:
+    # Plant I070 = 25%
+    # All other plants = 35%
+    # --------------------------------------------------------
+    monthly["Aisle_Percentage"] = (
+        monthly[plant_col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .apply(lambda x: 0.25 if x == "I070" else 0.35)
+    )
+
+    monthly["Aisle_Space"] = (
+        monthly["Average_Monthly_Space_Before_Aisle"]
+        * monthly["Aisle_Percentage"]
+    )
+
+    monthly["Average_Monthly_Space"] = (
+        monthly["Average_Monthly_Space_Before_Aisle"]
+        + monthly["Aisle_Space"]
     )
 
     monthly["Month_Name"] = (
@@ -286,6 +310,13 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
             }
         )
 
+        percent_fmt = workbook.add_format(
+            {
+                "num_format": "0%",
+                "border": 1,
+            }
+        )
+
         for sheet_name in [
             "Monthly Plant Average",
             "Weekly Plant Summary",
@@ -294,8 +325,12 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
             worksheet = writer.sheets[sheet_name]
             worksheet.freeze_panes(1, 0)
             worksheet.set_row(0, 22, header_fmt)
-            worksheet.set_column(0, 15, 20, text_fmt)
-            worksheet.set_column(3, 10, 22, num_fmt)
+            worksheet.set_column(0, 20, 20, text_fmt)
+            worksheet.set_column(3, 15, 22, num_fmt)
+
+            if sheet_name == "Monthly Plant Average":
+                # Aisle percentage column usually comes around column H/I depending on mapping
+                worksheet.set_column(7, 7, 15, percent_fmt)
 
     output.seek(0)
     return output.getvalue()
@@ -310,7 +345,7 @@ st.markdown(
         <div class="hero-title">🏭 Plant Space Utilization Control Tower</div>
         <div class="hero-subtitle">
             Upload your weekly stock occupancy file and view month-wise average utilized floor space by plant.
-            This dashboard considers stacking height while calculating practical floor space utilization.
+            This dashboard considers stacking height and additional aisle space while calculating practical floor space utilization.
         </div>
     </div>
     """,
@@ -323,7 +358,9 @@ st.markdown(
         <b>Calculation Logic:</b><br>
         1. Weekly Total Volumetric Area = Sum of Volumetric Area column, usually Column AP<br>
         2. Weekly Utilized Floor Space = Weekly Total Volumetric Area ÷ Stacking Height<br>
-        3. Monthly Average Space = Sum of Weekly Utilized Floor Space ÷ Number of weeks in that month<br>
+        3. Monthly Average Space Before Aisle = Sum of Weekly Utilized Floor Space ÷ Number of weeks in that month<br>
+        4. Additional Aisle Space = 25% for Plant I070 and 35% for all other plants<br>
+        5. Final Average Monthly Space = Monthly Average Space Before Aisle + Additional Aisle Space<br>
         <b>Default stacking height used:</b> 5 feet
     </div>
     """,
@@ -354,6 +391,14 @@ with st.sidebar:
         value=5.0,
         step=0.5,
         help="Default is 5 feet. Total volumetric area will be divided by this height.",
+    )
+
+    st.markdown("---")
+
+    st.header("🚚 Aisle Space Logic")
+    st.info(
+        "Plant I070 = 25% additional aisle space\n\n"
+        "All other plants = 35% additional aisle space"
     )
 
     st.markdown("---")
@@ -522,7 +567,9 @@ with f3:
     chart_mode = st.radio(
         "Chart value",
         [
-            "Average Monthly Space",
+            "Final Average Monthly Space",
+            "Average Monthly Space Before Aisle",
+            "Additional Aisle Space",
             "Total Utilized Floor Space",
             "Total Volumetric Area",
         ],
@@ -556,9 +603,10 @@ if filtered_monthly.empty:
 # ------------------------------------------------------------
 total_volumetric_area = filtered_monthly["Total_Volumetric_Area"].sum()
 total_floor_space = filtered_monthly["Total_Utilized_Floor_Space"].sum()
-avg_space = filtered_monthly["Average_Monthly_Space"].mean()
+avg_space_before_aisle = filtered_monthly["Average_Monthly_Space_Before_Aisle"].mean()
+total_aisle_space = filtered_monthly["Aisle_Space"].sum()
+final_avg_space = filtered_monthly["Average_Monthly_Space"].mean()
 plant_count = filtered_monthly[plant_col].nunique()
-week_count = filtered_weekly[week_col].nunique()
 record_count = len(filtered_raw)
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
@@ -566,10 +614,10 @@ k1, k2, k3, k4, k5, k6 = st.columns(6)
 metric_data = [
     ("Total Volumetric Area", format_number(total_volumetric_area, 2)),
     ("Total Floor Space / 5 Ft", format_number(total_floor_space, 2)),
-    ("Avg. Monthly Space", format_number(avg_space, 2)),
+    ("Avg. Space Before Aisle", format_number(avg_space_before_aisle, 2)),
+    ("Total Aisle Space", format_number(total_aisle_space, 2)),
+    ("Final Avg. Space", format_number(final_avg_space, 2)),
     ("Plants", format_number(plant_count, 0)),
-    ("Weeks", format_number(week_count, 0)),
-    ("Records", format_number(record_count, 0)),
 ]
 
 for col, (label, value) in zip([k1, k2, k3, k4, k5, k6], metric_data):
@@ -588,9 +636,17 @@ for col, (label, value) in zip([k1, k2, k3, k4, k5, k6], metric_data):
 # ------------------------------------------------------------
 # Chart column selection
 # ------------------------------------------------------------
-if chart_mode == "Average Monthly Space":
+ if_chart_label = ""
+
+if chart_mode == "Final Average Monthly Space":
     chart_col = "Average_Monthly_Space"
-    y_title = "Average Monthly Space"
+    y_title = "Final Average Monthly Space"
+elif chart_mode == "Average Monthly Space Before Aisle":
+    chart_col = "Average_Monthly_Space_Before_Aisle"
+    y_title = "Average Monthly Space Before Aisle"
+elif chart_mode == "Additional Aisle Space":
+    chart_col = "Aisle_Space"
+    y_title = "Additional Aisle Space"
 elif chart_mode == "Total Utilized Floor Space":
     chart_col = "Total_Utilized_Floor_Space"
     y_title = "Total Utilized Floor Space"
@@ -649,9 +705,9 @@ with c2:
         y=plant_col,
         orientation="h",
         text_auto=".2s",
-        title="Average Monthly Floor Space Ranking by Plant",
+        title="Final Average Monthly Floor Space Ranking by Plant",
         labels={
-            "Average_Monthly_Space": "Avg. Monthly Floor Space",
+            "Average_Monthly_Space": "Final Avg. Monthly Floor Space",
             plant_col: "Plant",
         },
     )
@@ -681,10 +737,10 @@ with c3:
         x="Month_Name",
         y="Average_Monthly_Space",
         markers=True,
-        title="Total Average Floor Space Trend Month-wise",
+        title="Final Average Floor Space Trend Month-wise",
         labels={
             "Month_Name": "Month",
-            "Average_Monthly_Space": "Average Floor Space",
+            "Average_Monthly_Space": "Final Average Floor Space",
         },
     )
 
@@ -711,7 +767,7 @@ with c4:
         names=plant_col,
         values="Average_Monthly_Space",
         hole=0.45,
-        title=f"Plant Share in Month {latest_month}",
+        title=f"Plant Share in Month {latest_month} After Aisle Space",
     )
 
     fig_donut.update_layout(
@@ -744,10 +800,10 @@ fig_weekly = px.line(
     y="Weekly_Utilized_Floor_Space",
     color=plant_col,
     markers=True,
-    title="Weekly Utilized Floor Space by Plant",
+    title="Weekly Utilized Floor Space by Plant Before Aisle Loading",
     labels={
         "Month_Week": "Month - Week",
-        "Weekly_Utilized_Floor_Space": "Weekly Floor Space",
+        "Weekly_Utilized_Floor_Space": "Weekly Floor Space Before Aisle",
         plant_col: "Plant",
     },
 )
@@ -775,6 +831,9 @@ show_cols = [
     "Total_Volumetric_Area",
     "Total_Utilized_Floor_Space",
     "No_of_Weeks",
+    "Average_Monthly_Space_Before_Aisle",
+    "Aisle_Percentage",
+    "Aisle_Space",
     "Average_Monthly_Space",
     "Highest_Week_Space",
     "Lowest_Week_Space",
@@ -795,8 +854,20 @@ st.dataframe(
             "Total Utilized Floor Space",
             format="%.2f",
         ),
+        "Average_Monthly_Space_Before_Aisle": st.column_config.NumberColumn(
+            "Average Monthly Space Before Aisle",
+            format="%.2f",
+        ),
+        "Aisle_Percentage": st.column_config.NumberColumn(
+            "Aisle %",
+            format="%.0f%%",
+        ),
+        "Aisle_Space": st.column_config.NumberColumn(
+            "Additional Aisle Space",
+            format="%.2f",
+        ),
         "Average_Monthly_Space": st.column_config.NumberColumn(
-            "Average Monthly Space",
+            "Final Average Monthly Space",
             format="%.2f",
         ),
         "Highest_Week_Space": st.column_config.NumberColumn(
@@ -822,7 +893,7 @@ with st.expander("View weekly plant-wise summary"):
                 format="%.2f",
             ),
             "Weekly_Utilized_Floor_Space": st.column_config.NumberColumn(
-                "Weekly Utilized Floor Space",
+                "Weekly Utilized Floor Space Before Aisle",
                 format="%.2f",
             ),
         },
@@ -862,7 +933,10 @@ st.markdown(
         2. Then, it divides the total volumetric area by <b>{stacking_height} feet stacking height</b>
         to calculate utilized floor space.<br>
         3. After that, Month + Plant average is calculated as total utilized floor space divided by
-        the number of weeks available in that month.
+        the number of weeks available in that month.<br>
+        4. Then, additional aisle space is added:
+        <b>25% for Plant I070</b> and <b>35% for all other plants</b>.<br>
+        5. Final Average Monthly Space = Average Monthly Space Before Aisle + Additional Aisle Space.
     </div>
     """,
     unsafe_allow_html=True,
