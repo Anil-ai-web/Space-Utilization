@@ -223,8 +223,7 @@ def prepare_monthly_space(
 
     # --------------------------------------------------------
     # Step 3:
-    # Monthly plant average:
-    # Monthly Average Space Before Aisle =
+    # Monthly plant average before aisle:
     # Sum of weekly utilized floor space / Number of weeks
     # --------------------------------------------------------
     monthly = (
@@ -329,7 +328,6 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
             worksheet.set_column(3, 15, 22, num_fmt)
 
             if sheet_name == "Monthly Plant Average":
-                # Aisle percentage column usually comes around column H/I depending on mapping
                 worksheet.set_column(7, 7, 15, percent_fmt)
 
     output.seek(0)
@@ -636,20 +634,22 @@ for col, (label, value) in zip([k1, k2, k3, k4, k5, k6], metric_data):
 # ------------------------------------------------------------
 # Chart column selection
 # ------------------------------------------------------------
- if_chart_label = ""
-
 if chart_mode == "Final Average Monthly Space":
     chart_col = "Average_Monthly_Space"
     y_title = "Final Average Monthly Space"
+
 elif chart_mode == "Average Monthly Space Before Aisle":
     chart_col = "Average_Monthly_Space_Before_Aisle"
     y_title = "Average Monthly Space Before Aisle"
+
 elif chart_mode == "Additional Aisle Space":
     chart_col = "Aisle_Space"
     y_title = "Additional Aisle Space"
+
 elif chart_mode == "Total Utilized Floor Space":
     chart_col = "Total_Utilized_Floor_Space"
     y_title = "Total Utilized Floor Space"
+
 else:
     chart_col = "Total_Volumetric_Area"
     y_title = "Total Volumetric Area"
@@ -755,7 +755,12 @@ with c3:
 
 
 with c4:
-    latest_month = max(selected_months) if selected_months else filtered_monthly[month_col].max()
+    latest_month = (
+        max(selected_months)
+        if selected_months
+        else filtered_monthly[month_col].max()
+    )
+
     latest_df = filtered_monthly[filtered_monthly[month_col] == latest_month]
 
     donut_df = latest_df.groupby(plant_col, as_index=False)[
@@ -787,6 +792,7 @@ st.markdown(
 )
 
 weekly_trend = filtered_weekly.copy()
+
 weekly_trend["Month_Week"] = (
     "M"
     + weekly_trend[month_col].astype(int).astype(str)
