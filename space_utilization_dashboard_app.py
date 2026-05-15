@@ -41,6 +41,7 @@ st.markdown(
             font-size: 15px;
             opacity: 0.92;
             margin-top: 8px;
+            line-height: 1.6;
         }
 
         .metric-card {
@@ -69,11 +70,24 @@ st.markdown(
             font-weight: 800;
             color: #0f172a;
             margin-top: 14px;
+            margin-bottom: 8px;
         }
 
         .small-note {
             font-size: 12px;
             color: #64748b;
+            margin-top: 8px;
+        }
+
+        .formula-box {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 16px;
+            padding: 14px 18px;
+            color: #0f172a;
+            margin-bottom: 16px;
+            font-size: 14px;
+            line-height: 1.7;
         }
 
         div[data-testid="stDataFrame"] {
@@ -133,7 +147,29 @@ def format_number(value, decimals=0):
         return str(value)
 
 
-def prepare_monthly_space(df, month_col, week_col, plant_col, area_col):
+def find_default_column(columns, possible_names=None, fallback_index=None):
+    possible_names = possible_names or []
+
+    lower_map = {str(c).strip().lower(): c for c in columns}
+
+    for name in possible_names:
+        if str(name).strip().lower() in lower_map:
+            return lower_map[str(name).strip().lower()]
+
+    if fallback_index is not None and fallback_index < len(columns):
+        return columns[fallback_index]
+
+    return columns[0]
+
+
+def prepare_monthly_space(
+    df,
+    month_col,
+    week_col,
+    plant_col,
+    area_col,
+    stacking_height,
+):
     work = df.copy()
 
     work[month_col] = pd.to_numeric(work[month_col], errors="coerce")
@@ -142,6 +178,7 @@ def prepare_monthly_space(df, month_col, week_col, plant_col, area_col):
     work[plant_col] = work[plant_col].astype(str).str.strip()
 
     work = work.dropna(subset=[month_col, week_col])
+
     work = work[
         work[plant_col].notna()
         & (work[plant_col] != "")
@@ -163,31 +200,47 @@ def prepare_monthly_space(df, month_col, week_col, plant_col, area_col):
         12: "Dec",
     }
 
+    # --------------------------------------------------------
     # Step 1:
-    # First calculate week-wise utilized space for each Month + Week + Plant
+    # Calculate week-wise total volumetric area for each:
+    # Month + Week + Plant
+    # --------------------------------------------------------
     weekly = (
         work.groupby([month_col, week_col, plant_col], dropna=False)[area_col]
         .sum()
         .reset_index()
-        .rename(columns={area_col: "Weekly Utilized Space"})
+        .rename(columns={area_col: "Weekly_Total_Volumetric_Area"})
     )
 
+    # --------------------------------------------------------
     # Step 2:
-    # Then calculate monthly plant average:
-    # Monthly Average = Total weekly utilized space / No. of weeks
+    # Divide total volumetric area by stacking height.
+    # Default stacking height = 5 feet.
+    # --------------------------------------------------------
+    weekly["Weekly_Utilized_Floor_Space"] = (
+        weekly["Weekly_Total_Volumetric_Area"] / stacking_height
+    )
+
+    # --------------------------------------------------------
+    # Step 3:
+    # Monthly plant average:
+    # Monthly Average Space =
+    # Sum of weekly utilized floor space / Number of weeks
+    # --------------------------------------------------------
     monthly = (
         weekly.groupby([month_col, plant_col], dropna=False)
         .agg(
-            Total_Utilized_Space=("Weekly Utilized Space", "sum"),
+            Total_Volumetric_Area=("Weekly_Total_Volumetric_Area", "sum"),
+            Total_Utilized_Floor_Space=("Weekly_Utilized_Floor_Space", "sum"),
             No_of_Weeks=(week_col, "nunique"),
-            Highest_Week_Space=("Weekly Utilized Space", "max"),
-            Lowest_Week_Space=("Weekly Utilized Space", "min"),
+            Highest_Week_Space=("Weekly_Utilized_Floor_Space", "max"),
+            Lowest_Week_Space=("Weekly_Utilized_Floor_Space", "min"),
         )
         .reset_index()
     )
 
     monthly["Average_Monthly_Space"] = (
-        monthly["Total_Utilized_Space"]
+        monthly["Total_Utilized_Floor_Space"]
         / monthly["No_of_Weeks"].replace(0, pd.NA)
     )
 
@@ -210,6 +263,7 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
         filtered_raw_df.to_excel(writer, index=False, sheet_name="Filtered Raw Data")
 
         workbook = writer.book
+
         header_fmt = workbook.add_format(
             {
                 "bold": True,
@@ -218,8 +272,19 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
                 "border": 1,
             }
         )
-        num_fmt = workbook.add_format({"num_format": "#,##0.00", "border": 1})
-        text_fmt = workbook.add_format({"border": 1})
+
+        num_fmt = workbook.add_format(
+            {
+                "num_format": "#,##0.00",
+                "border": 1,
+            }
+        )
+
+        text_fmt = workbook.add_format(
+            {
+                "border": 1,
+            }
+        )
 
         for sheet_name in [
             "Monthly Plant Average",
@@ -229,26 +294,11 @@ def to_excel_bytes(monthly_df, weekly_df, filtered_raw_df):
             worksheet = writer.sheets[sheet_name]
             worksheet.freeze_panes(1, 0)
             worksheet.set_row(0, 22, header_fmt)
-            worksheet.set_column(0, 12, 18, text_fmt)
-            worksheet.set_column(2, 8, 20, num_fmt)
+            worksheet.set_column(0, 15, 20, text_fmt)
+            worksheet.set_column(3, 10, 22, num_fmt)
 
     output.seek(0)
     return output.getvalue()
-
-
-def find_default_column(columns, possible_names=None, fallback_index=None):
-    possible_names = possible_names or []
-
-    lower_map = {str(c).strip().lower(): c for c in columns}
-
-    for name in possible_names:
-        if str(name).strip().lower() in lower_map:
-            return lower_map[str(name).strip().lower()]
-
-    if fallback_index is not None and fallback_index < len(columns):
-        return columns[fallback_index]
-
-    return columns[0]
 
 
 # ------------------------------------------------------------
@@ -259,10 +309,22 @@ st.markdown(
     <div class="hero-card">
         <div class="hero-title">🏭 Plant Space Utilization Control Tower</div>
         <div class="hero-subtitle">
-            Upload your weekly stock occupancy file and view month-wise average utilized space by plant.
-            Formula used:
-            <b>Monthly Average = Sum of weekly utilized space / Number of weeks available in that month</b>.
+            Upload your weekly stock occupancy file and view month-wise average utilized floor space by plant.
+            This dashboard considers stacking height while calculating practical floor space utilization.
         </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="formula-box">
+        <b>Calculation Logic:</b><br>
+        1. Weekly Total Volumetric Area = Sum of Volumetric Area column, usually Column AP<br>
+        2. Weekly Utilized Floor Space = Weekly Total Volumetric Area ÷ Stacking Height<br>
+        3. Monthly Average Space = Sum of Weekly Utilized Floor Space ÷ Number of weeks in that month<br>
+        <b>Default stacking height used:</b> 5 feet
     </div>
     """,
     unsafe_allow_html=True,
@@ -278,7 +340,20 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Upload Stock Occupancy Excel file",
         type=["xlsb", "xlsx", "xlsm"],
-        help="Your file should contain DATA sheet with Month, Week, Plant, and volumetric area columns.",
+        help="Your file should contain DATA sheet with Month, Week, Plant, and Volumetric Area columns.",
+    )
+
+    st.markdown("---")
+
+    st.header("📐 Stacking Height")
+
+    stacking_height = st.number_input(
+        "Stacking height in feet",
+        min_value=1.0,
+        max_value=50.0,
+        value=5.0,
+        step=0.5,
+        help="Default is 5 feet. Total volumetric area will be divided by this height.",
     )
 
     st.markdown("---")
@@ -309,6 +384,7 @@ except Exception as e:
 
 with st.sidebar:
     default_sheet_index = sheets.index("DATA") if "DATA" in sheets else 0
+
     sheet_name = st.selectbox(
         "Select data sheet",
         sheets,
@@ -348,13 +424,27 @@ default_week_col = find_default_column(
 
 default_area_col = find_default_column(
     columns,
-    possible_names=["volumetric area", "Volumetric Area", "AP"],
+    possible_names=[
+        "volumetric area",
+        "Volumetric Area",
+        "Volumetric_Area",
+        "AP",
+    ],
     fallback_index=41 if len(columns) > 41 else None,  # Column AP
 )
 
 default_plant_col = find_default_column(
     columns,
-    possible_names=["Plant", "plant", "Location", "Godown", "Warehouse"],
+    possible_names=[
+        "Plant",
+        "plant",
+        "Location",
+        "location",
+        "Godown",
+        "Warehouse",
+        "warehouse",
+        "Plant Name",
+    ],
     fallback_index=6 if len(columns) > 6 else None,
 )
 
@@ -397,6 +487,7 @@ try:
         week_col=week_col,
         plant_col=plant_col,
         area_col=area_col,
+        stacking_height=stacking_height,
     )
 except Exception as e:
     st.error(f"Unable to calculate dashboard. Please check column mapping. Error: {e}")
@@ -430,7 +521,11 @@ with f2:
 with f3:
     chart_mode = st.radio(
         "Chart value",
-        ["Average Monthly Space", "Total Utilized Space"],
+        [
+            "Average Monthly Space",
+            "Total Utilized Floor Space",
+            "Total Volumetric Area",
+        ],
         horizontal=False,
     )
 
@@ -459,23 +554,25 @@ if filtered_monthly.empty:
 # ------------------------------------------------------------
 # KPI cards
 # ------------------------------------------------------------
-total_area = filtered_monthly["Total_Utilized_Space"].sum()
-avg_area = filtered_monthly["Average_Monthly_Space"].mean()
+total_volumetric_area = filtered_monthly["Total_Volumetric_Area"].sum()
+total_floor_space = filtered_monthly["Total_Utilized_Floor_Space"].sum()
+avg_space = filtered_monthly["Average_Monthly_Space"].mean()
 plant_count = filtered_monthly[plant_col].nunique()
 week_count = filtered_weekly[week_col].nunique()
 record_count = len(filtered_raw)
 
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 metric_data = [
-    ("Total Utilized Space", format_number(total_area, 2)),
-    ("Avg. Monthly Space", format_number(avg_area, 2)),
+    ("Total Volumetric Area", format_number(total_volumetric_area, 2)),
+    ("Total Floor Space / 5 Ft", format_number(total_floor_space, 2)),
+    ("Avg. Monthly Space", format_number(avg_space, 2)),
     ("Plants", format_number(plant_count, 0)),
     ("Weeks", format_number(week_count, 0)),
     ("Records", format_number(record_count, 0)),
 ]
 
-for col, (label, value) in zip([k1, k2, k3, k4, k5], metric_data):
+for col, (label, value) in zip([k1, k2, k3, k4, k5, k6], metric_data):
     with col:
         st.markdown(
             f"""
@@ -489,23 +586,25 @@ for col, (label, value) in zip([k1, k2, k3, k4, k5], metric_data):
 
 
 # ------------------------------------------------------------
+# Chart column selection
+# ------------------------------------------------------------
+if chart_mode == "Average Monthly Space":
+    chart_col = "Average_Monthly_Space"
+    y_title = "Average Monthly Space"
+elif chart_mode == "Total Utilized Floor Space":
+    chart_col = "Total_Utilized_Floor_Space"
+    y_title = "Total Utilized Floor Space"
+else:
+    chart_col = "Total_Volumetric_Area"
+    y_title = "Total Volumetric Area"
+
+
+# ------------------------------------------------------------
 # Charts
 # ------------------------------------------------------------
 st.markdown(
     '<div class="section-title">📊 Monthly Plant-wise Space Analysis</div>',
     unsafe_allow_html=True,
-)
-
-chart_col = (
-    "Average_Monthly_Space"
-    if chart_mode == "Average Monthly Space"
-    else "Total_Utilized_Space"
-)
-
-y_title = (
-    "Average Monthly Space"
-    if chart_col == "Average_Monthly_Space"
-    else "Total Utilized Space"
 )
 
 c1, c2 = st.columns([1.35, 1])
@@ -550,9 +649,9 @@ with c2:
         y=plant_col,
         orientation="h",
         text_auto=".2s",
-        title="Average Space Ranking by Plant",
+        title="Average Monthly Floor Space Ranking by Plant",
         labels={
-            "Average_Monthly_Space": "Avg. Space",
+            "Average_Monthly_Space": "Avg. Monthly Floor Space",
             plant_col: "Plant",
         },
     )
@@ -582,10 +681,10 @@ with c3:
         x="Month_Name",
         y="Average_Monthly_Space",
         markers=True,
-        title="Total Average Space Trend Month-wise",
+        title="Total Average Floor Space Trend Month-wise",
         labels={
             "Month_Name": "Month",
-            "Average_Monthly_Space": "Average Space",
+            "Average_Monthly_Space": "Average Floor Space",
         },
     )
 
@@ -624,6 +723,44 @@ with c4:
 
 
 # ------------------------------------------------------------
+# Weekly trend chart
+# ------------------------------------------------------------
+st.markdown(
+    '<div class="section-title">📈 Weekly Floor Space Movement</div>',
+    unsafe_allow_html=True,
+)
+
+weekly_trend = filtered_weekly.copy()
+weekly_trend["Month_Week"] = (
+    "M"
+    + weekly_trend[month_col].astype(int).astype(str)
+    + " - W"
+    + weekly_trend[week_col].astype(int).astype(str)
+)
+
+fig_weekly = px.line(
+    weekly_trend.sort_values([month_col, week_col, plant_col]),
+    x="Month_Week",
+    y="Weekly_Utilized_Floor_Space",
+    color=plant_col,
+    markers=True,
+    title="Weekly Utilized Floor Space by Plant",
+    labels={
+        "Month_Week": "Month - Week",
+        "Weekly_Utilized_Floor_Space": "Weekly Floor Space",
+        plant_col: "Plant",
+    },
+)
+
+fig_weekly.update_layout(
+    height=430,
+    margin=dict(l=10, r=10, t=55, b=10),
+)
+
+st.plotly_chart(fig_weekly, use_container_width=True)
+
+
+# ------------------------------------------------------------
 # Detailed table
 # ------------------------------------------------------------
 st.markdown(
@@ -635,7 +772,8 @@ show_cols = [
     month_col,
     "Month_Name",
     plant_col,
-    "Total_Utilized_Space",
+    "Total_Volumetric_Area",
+    "Total_Utilized_Floor_Space",
     "No_of_Weeks",
     "Average_Monthly_Space",
     "Highest_Week_Space",
@@ -649,8 +787,12 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Total_Utilized_Space": st.column_config.NumberColumn(
-            "Total Utilized Space",
+        "Total_Volumetric_Area": st.column_config.NumberColumn(
+            "Total Volumetric Area",
+            format="%.2f",
+        ),
+        "Total_Utilized_Floor_Space": st.column_config.NumberColumn(
+            "Total Utilized Floor Space",
             format="%.2f",
         ),
         "Average_Monthly_Space": st.column_config.NumberColumn(
@@ -674,6 +816,24 @@ with st.expander("View weekly plant-wise summary"):
         filtered_weekly.sort_values([month_col, week_col, plant_col]),
         use_container_width=True,
         hide_index=True,
+        column_config={
+            "Weekly_Total_Volumetric_Area": st.column_config.NumberColumn(
+                "Weekly Total Volumetric Area",
+                format="%.2f",
+            ),
+            "Weekly_Utilized_Floor_Space": st.column_config.NumberColumn(
+                "Weekly Utilized Floor Space",
+                format="%.2f",
+            ),
+        },
+    )
+
+
+with st.expander("View filtered raw data"):
+    st.dataframe(
+        filtered_raw,
+        use_container_width=True,
+        hide_index=True,
     )
 
 
@@ -695,10 +855,14 @@ st.download_button(
 
 
 st.markdown(
-    """
+    f"""
     <div class="small-note">
-        Calculation logic: first the app sums volumetric area at Month + Week + Plant level,
-        then calculates Month + Plant average as monthly total divided by the number of distinct weeks in that month.
+        Calculation logic used in this dashboard:<br>
+        1. First, the app sums volumetric area at Month + Week + Plant level.<br>
+        2. Then, it divides the total volumetric area by <b>{stacking_height} feet stacking height</b>
+        to calculate utilized floor space.<br>
+        3. After that, Month + Plant average is calculated as total utilized floor space divided by
+        the number of weeks available in that month.
     </div>
     """,
     unsafe_allow_html=True,
