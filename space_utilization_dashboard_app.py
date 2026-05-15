@@ -60,7 +60,7 @@ st.markdown(
         }
 
         .metric-value {
-            font-size: 24px;
+            font-size: 23px;
             color: #0f172a;
             font-weight: 850;
             margin-top: 6px;
@@ -78,6 +78,7 @@ st.markdown(
             font-size: 12px;
             color: #64748b;
             margin-top: 8px;
+            line-height: 1.7;
         }
 
         .formula-box {
@@ -165,7 +166,7 @@ def find_default_column(columns, possible_names=None, fallback_index=None):
 
 def safe_to_datetime(series):
     """
-    Converts normal Excel dates, text dates, and Excel serial dates into pandas datetime.
+    Converts Excel dates, text dates, and Excel serial dates into pandas datetime.
     """
     dt = pd.to_datetime(series, errors="coerce", dayfirst=True)
 
@@ -226,7 +227,7 @@ def prepare_monthly_space(
 
     # --------------------------------------------------------
     # Step 1:
-    # Date-wise total volumetric area for each Month + Date + Plant
+    # Daily total volumetric area for Month + Date + Plant
     # --------------------------------------------------------
     daily = (
         work.groupby([month_col, "Date_Only", plant_col], dropna=False)[area_col]
@@ -240,27 +241,33 @@ def prepare_monthly_space(
     # Divide total volumetric area by stacking height.
     # Default stacking height = 5 feet.
     # --------------------------------------------------------
-    daily["Daily_Utilized_Floor_Space"] = (
+    daily["Daily_Utilized_Floor_Space_Before_Aisle"] = (
         daily["Daily_Total_Volumetric_Area"] / stacking_height
     )
 
     # --------------------------------------------------------
     # Step 3:
-    # Monthly plant average before aisle space.
-    # Base Monthly Average Space =
-    # Sum of daily utilized floor space / Number of dates
+    # Monthly plant average before aisle.
+    # Base Monthly Average =
+    # Sum of daily utilized floor space / Number of stock dates
     # --------------------------------------------------------
     monthly = (
         daily.groupby([month_col, plant_col], dropna=False)
         .agg(
             Total_Volumetric_Area=("Daily_Total_Volumetric_Area", "sum"),
             Total_Utilized_Floor_Space_Before_Aisle=(
-                "Daily_Utilized_Floor_Space",
+                "Daily_Utilized_Floor_Space_Before_Aisle",
                 "sum",
             ),
             No_of_Dates=("Date_Only", "nunique"),
-            Highest_Date_Space_Before_Aisle=("Daily_Utilized_Floor_Space", "max"),
-            Lowest_Date_Space_Before_Aisle=("Daily_Utilized_Floor_Space", "min"),
+            Highest_Date_Space_Before_Aisle=(
+                "Daily_Utilized_Floor_Space_Before_Aisle",
+                "max",
+            ),
+            Lowest_Date_Space_Before_Aisle=(
+                "Daily_Utilized_Floor_Space_Before_Aisle",
+                "min",
+            ),
         )
         .reset_index()
     )
@@ -272,7 +279,7 @@ def prepare_monthly_space(
 
     # --------------------------------------------------------
     # Step 4:
-    # Add aisle space:
+    # Aisle Space Rule:
     # Plant I070 = 25%
     # All other plants = 35%
     # --------------------------------------------------------
@@ -290,12 +297,13 @@ def prepare_monthly_space(
         monthly["Base_Average_Monthly_Space"] * monthly["Aisle_Percentage"]
     )
 
-    monthly["Average_Monthly_Space_With_Aisle"] = (
+    monthly["Final_Average_Monthly_Space_With_Aisle"] = (
         monthly["Base_Average_Monthly_Space"] + monthly["Aisle_Space"]
     )
 
     monthly["Total_Utilized_Floor_Space_With_Aisle"] = (
-        monthly["Average_Monthly_Space_With_Aisle"] * monthly["No_of_Dates"]
+        monthly["Final_Average_Monthly_Space_With_Aisle"]
+        * monthly["No_of_Dates"]
     )
 
     monthly["Highest_Date_Space_With_Aisle"] = (
@@ -307,6 +315,11 @@ def prepare_monthly_space(
         monthly["Lowest_Date_Space_Before_Aisle"]
         * (1 + monthly["Aisle_Percentage"])
     )
+
+    # Keep friendly chart column names
+    monthly["Average_Monthly_Space"] = monthly[
+        "Final_Average_Monthly_Space_With_Aisle"
+    ]
 
     monthly["Month_Name"] = (
         monthly[month_col]
@@ -659,7 +672,7 @@ total_floor_before_aisle = filtered_monthly[
     "Total_Utilized_Floor_Space_Before_Aisle"
 ].sum()
 avg_base_space = filtered_monthly["Base_Average_Monthly_Space"].mean()
-avg_final_space = filtered_monthly["Average_Monthly_Space_With_Aisle"].mean()
+avg_final_space = filtered_monthly["Final_Average_Monthly_Space_With_Aisle"].mean()
 total_aisle_space = filtered_monthly["Aisle_Space"].sum()
 plant_count = filtered_monthly[plant_col].nunique()
 date_count = filtered_daily["Date_Only"].nunique()
@@ -669,7 +682,7 @@ k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 metric_data = [
     ("Total Volumetric Area", format_number(total_volumetric_area, 2)),
-    ("Floor Space Before Aisle", format_number(total_floor_before_aisle, 2)),
+    ("Floor Before Aisle", format_number(total_floor_before_aisle, 2)),
     ("Avg. Before Aisle", format_number(avg_base_space, 2)),
     ("Avg. With Aisle", format_number(avg_final_space, 2)),
     ("Aisle Space Added", format_number(total_aisle_space, 2)),
@@ -717,7 +730,7 @@ with k8:
 # Chart column selection
 # ------------------------------------------------------------
 if chart_mode == "Final Monthly Space With Aisle":
-    chart_col = "Average_Monthly_Space_With_Aisle"
+    chart_col = "Final_Average_Monthly_Space_With_Aisle"
     y_title = "Final Monthly Space With Aisle"
 elif chart_mode == "Base Monthly Space Before Aisle":
     chart_col = "Base_Average_Monthly_Space"
@@ -768,21 +781,21 @@ with c1:
 
 with c2:
     plant_rank = (
-        filtered_monthly.groupby(plant_col)["Average_Monthly_Space_With_Aisle"]
+        filtered_monthly.groupby(plant_col)["Final_Average_Monthly_Space_With_Aisle"]
         .mean()
         .reset_index()
-        .sort_values("Average_Monthly_Space_With_Aisle", ascending=False)
+        .sort_values("Final_Average_Monthly_Space_With_Aisle", ascending=False)
     )
 
     fig_rank = px.bar(
         plant_rank,
-        x="Average_Monthly_Space_With_Aisle",
+        x="Final_Average_Monthly_Space_With_Aisle",
         y=plant_col,
         orientation="h",
         text_auto=".2s",
         title="Final Average Space Ranking by Plant",
         labels={
-            "Average_Monthly_Space_With_Aisle": "Avg. Space With Aisle",
+            "Final_Average_Monthly_Space_With_Aisle": "Avg. Space With Aisle",
             plant_col: "Plant",
         },
     )
@@ -801,7 +814,7 @@ c3, c4 = st.columns([1.2, 1])
 with c3:
     trend_df = (
         filtered_monthly.groupby([month_col, "Month_Name"], as_index=False)[
-            "Average_Monthly_Space_With_Aisle"
+            "Final_Average_Monthly_Space_With_Aisle"
         ]
         .sum()
         .sort_values(month_col)
@@ -810,12 +823,12 @@ with c3:
     fig_line = px.line(
         trend_df,
         x="Month_Name",
-        y="Average_Monthly_Space_With_Aisle",
+        y="Final_Average_Monthly_Space_With_Aisle",
         markers=True,
         title="Final Average Space Trend Month-wise",
         labels={
             "Month_Name": "Month",
-            "Average_Monthly_Space_With_Aisle": "Final Average Space With Aisle",
+            "Final_Average_Monthly_Space_With_Aisle": "Final Average Space With Aisle",
         },
     )
 
@@ -834,13 +847,13 @@ with c4:
     latest_df = filtered_monthly[filtered_monthly[month_col] == latest_month]
 
     donut_df = latest_df.groupby(plant_col, as_index=False)[
-        "Average_Monthly_Space_With_Aisle"
+        "Final_Average_Monthly_Space_With_Aisle"
     ].sum()
 
     fig_donut = px.pie(
         donut_df,
         names=plant_col,
-        values="Average_Monthly_Space_With_Aisle",
+        values="Final_Average_Monthly_Space_With_Aisle",
         hole=0.45,
         title=f"Plant Share in Month {latest_month} After Aisle",
     )
@@ -867,13 +880,13 @@ daily_trend["Date_Label"] = pd.to_datetime(daily_trend["Date_Only"]).dt.strftime
 fig_daily = px.line(
     daily_trend.sort_values(["Date_Only", plant_col]),
     x="Date_Label",
-    y="Daily_Utilized_Floor_Space",
+    y="Daily_Utilized_Floor_Space_Before_Aisle",
     color=plant_col,
     markers=True,
     title="Daily Utilized Floor Space by Plant Before Aisle",
     labels={
         "Date_Label": "Date",
-        "Daily_Utilized_Floor_Space": "Daily Floor Space Before Aisle",
+        "Daily_Utilized_Floor_Space_Before_Aisle": "Daily Floor Space Before Aisle",
         plant_col: "Plant",
     },
 )
@@ -904,7 +917,7 @@ show_cols = [
     "Base_Average_Monthly_Space",
     "Aisle_Percentage_Display",
     "Aisle_Space",
-    "Average_Monthly_Space_With_Aisle",
+    "Final_Average_Monthly_Space_With_Aisle",
     "Total_Utilized_Floor_Space_With_Aisle",
     "Highest_Date_Space_With_Aisle",
     "Lowest_Date_Space_With_Aisle",
@@ -941,7 +954,7 @@ st.dataframe(
             "Aisle Space Added",
             format="%.2f",
         ),
-        "Average_Monthly_Space_With_Aisle": st.column_config.NumberColumn(
+        "Final_Average_Monthly_Space_With_Aisle": st.column_config.NumberColumn(
             "Final Average Monthly Space With Aisle",
             format="%.2f",
         ),
@@ -974,7 +987,7 @@ with st.expander("View daily plant-wise summary before aisle"):
                 "Daily Total Volumetric Area",
                 format="%.2f",
             ),
-            "Daily_Utilized_Floor_Space": st.column_config.NumberColumn(
+            "Daily_Utilized_Floor_Space_Before_Aisle": st.column_config.NumberColumn(
                 "Daily Utilized Floor Space Before Aisle",
                 format="%.2f",
             ),
