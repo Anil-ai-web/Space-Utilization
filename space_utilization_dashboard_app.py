@@ -103,45 +103,47 @@ plant_col=columns[6] if len(columns)>6 else columns[0]
 
 clean_df, weekly_df, monthly_df = prepare_monthly_space(df, month_col, week_col, plant_col, area_col, stacking_height)
 
+# ------------------------- FILTERS -------------------------
+st.markdown('<div class="section-title">🔎 Filters</div>', unsafe_allow_html=True)
+f1,f2 = st.columns([1,2])
+all_months = sorted(monthly_df[month_col].dropna().unique())
+all_plants = sorted(monthly_df["Plant_Name"].dropna().astype(str).unique())
+
+with f1:
+    selected_months=st.multiselect("Select Month",all_months,default=all_months)
+with f2:
+    selected_plants=st.multiselect("Select Warehouse / Plant",all_plants,default=all_plants)
+
+filtered_monthly = monthly_df[monthly_df[month_col].isin(selected_months) & monthly_df["Plant_Name"].isin(selected_plants)]
+filtered_weekly = weekly_df[weekly_df[month_col].isin(selected_months) & weekly_df["Plant_Name"].isin(selected_plants)]
+filtered_raw = clean_df[clean_df[month_col].isin(selected_months) & clean_df["Plant_Name"].isin(selected_plants)]
+
+if filtered_monthly.empty: st.warning("No records for selected Month/Warehouse filter."); st.stop()
+
 # ------------------------- KPI CARDS -------------------------
-plant_count = monthly_df["Plant_Name"].nunique()
-month_count = monthly_df[month_col].nunique()
-week_count = weekly_df[week_col].nunique()
-total_floor_space = monthly_df["Total_Utilized_Floor_Space"].sum()
-total_aisle_space = monthly_df["Aisle_Space"].sum()
-final_avg_space = monthly_df["Average_Monthly_Space"].mean()
+plant_count = filtered_monthly["Plant_Name"].nunique()
+month_count = filtered_monthly[month_col].nunique()
+week_count = filtered_weekly[week_col].nunique()
+total_floor_space = filtered_monthly["Total_Utilized_Floor_Space"].sum()
+total_aisle_space = filtered_monthly["Aisle_Space"].sum()
+final_avg_space = filtered_monthly["Average_Monthly_Space"].mean()
 
 k1,k2,k3,k4,k5,k6 = st.columns(6)
-metrics = [
-    ("Months", format_number(month_count,0),""),
-    ("Weeks", format_number(week_count,0),""),
-    ("Warehouses", format_number(plant_count,0),""),
-    ("Floor Space", format_number(total_floor_space,0),"Sqft"),
-    ("Aisle Space", format_number(total_aisle_space,0),"Sqft"),
-    ("Final Avg. Space", format_number(final_avg_space,0),"Sqft"),
-]
-for col,(label,value,unit) in zip([k1,k2,k3,k4,k5,k6],metrics):
-    with col:
-        unit_html = f'<div class="metric-unit">{unit}</div>' if unit else ""
-        st.markdown(f"""<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div>{unit_html}</div>""", unsafe_allow_html=True)
+metrics=[("Months", format_number(month_count,0),""),("Weeks", format_number(week_count,0),""),("Warehouses", format_number(plant_count,0),""),("Floor Space",format_number(total_floor_space,0),"Sqft"),("Aisle Space",format_number(total_aisle_space,0),"Sqft"),("Final Avg. Space",format_number(final_avg_space,0),"Sqft")]
 
-# ------------------------- MONTHLY BAR -------------------------
-fig_bar = px.bar(
-    monthly_df.sort_values([month_col,"Plant_Name"]),
-    x="Month_Name", y="Average_Monthly_Space", color="Plant_Name",
-    barmode="group", text_auto=".0s",
-    title="Warehouse-wise Final Average Space by Month (Including Aisle)",
-    labels={"Month_Name":"Month","Average_Monthly_Space":"Final Avg. Space Sqft","Plant_Name":"Warehouse"}
-)
+for col,(label,value,unit) in zip([k1,k2,k3,k4,k5,k6],metrics):
+    with col: unit_html=f'<div class="metric-unit">{unit}</div>' if unit else ""
+    st.markdown(f"""<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div>{unit_html}</div>""",unsafe_allow_html=True)
+
+# ------------------------- MONTHLY BAR CHART -------------------------
+fig_bar=px.bar(filtered_monthly.sort_values([month_col,"Plant_Name"]),x="Month_Name",y="Average_Monthly_Space",color="Plant_Name",
+               barmode="group",text_auto=".0s",title="Warehouse-wise Final Avg Space by Month Including Aisle",
+               labels={"Month_Name":"Month","Average_Monthly_Space":"Final Avg Space Sqft","Plant_Name":"Warehouse"})
 st.plotly_chart(fig_bar,use_container_width=True)
 
-# ------------------------- WEEKLY LINE -------------------------
-weekly_df["Month_Week"]="M"+weekly_df[month_col].astype(int).astype(str)+" - W"+weekly_df[week_col].astype(int).astype(str)
-fig_weekly = px.line(
-    weekly_df.sort_values([month_col,week_col,"Plant_Name"]),
-    x="Month_Week", y="Weekly_Final_Floor_Space", color="Plant_Name",
-    markers=True,
-    title="Weekly Utilized Floor Space by Warehouse Including Aisle Space",
-    labels={"Month_Week":"Month-Week","Weekly_Final_Floor_Space":"Weekly Floor Space Including Aisle Sqft","Plant_Name":"Warehouse"}
-)
+# ------------------------- WEEKLY LINE CHART -------------------------
+filtered_weekly["Month_Week"]="M"+filtered_weekly[month_col].astype(int).astype(str)+" - W"+filtered_weekly[week_col].astype(int).astype(str)
+fig_weekly=px.line(filtered_weekly.sort_values([month_col,week_col,"Plant_Name"]),x="Month_Week",y="Weekly_Final_Floor_Space",color="Plant_Name",
+                   markers=True,title="Weekly Utilized Floor Space by Warehouse Including Aisle",
+                   labels={"Month_Week":"Month-Week","Weekly_Final_Floor_Space":"Weekly Floor Space Including Aisle Sqft","Plant_Name":"Warehouse"})
 st.plotly_chart(fig_weekly,use_container_width=True)
